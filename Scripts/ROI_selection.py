@@ -2,7 +2,8 @@ import tkinter as tk
 from tkinter import filedialog
 import cv2
 from PIL import Image, ImageTk
-
+import os
+from pathlib import Path
 BG = "#0f1117"
 PANEL = "#1a1d27"
 CARD = "#22263a"
@@ -33,8 +34,13 @@ class ROIselector:
 
 
         self.btn = tk.Button(root, text="Load Image",bg=ACCENT,fg="black",font=("Segoe UI", 10, "bold" ), relief="flat",
-                                padx=10, pady=5,cursor="hand2", command=self.load_image)
-        self.btn.pack(pady=10, padx=10, fill="x")
+                                padx=40, pady=5,cursor="hand2", command=self.load_image)
+        self.btn.pack(side="left",pady=10, padx=40, fill="x")
+
+        self.btn_2 = tk.Button(root, text="save Image",bg=ACCENT,fg="black",font=("Segoe UI", 10, "bold" ), relief="flat",
+                                padx=40, pady=5,cursor="hand2", command=self.save_ROI)
+        self.btn_2.pack(side="right",pady=10, padx=40, fill="x")
+
 
         self.image = None
         self.tk_image = None
@@ -42,6 +48,8 @@ class ROIselector:
         self.start_x = None
         self.start_y = None
         self.rect = None
+
+        self.current_roi= None
 
         # Eventos
         self.canvas.bind("<ButtonPress-1>", self.on_click)
@@ -58,6 +66,7 @@ class ROIselector:
 
         self.image = img
         self.display_image(img)
+        self.image_path = path
 
     def display_image(self, img):
         self_canvas_w = self.canvas.winfo_width()
@@ -73,7 +82,6 @@ class ROIselector:
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
         self.display_scale = scale
 
-        # ✅ offset = margen para centrar la imagen dentro del canvas
         self.img_offset_x = (self_canvas_w - new_w) // 2
         self.img_offset_y = (self_canvas_h - new_h) // 2
 
@@ -81,7 +89,6 @@ class ROIselector:
         self.tk_image = ImageTk.PhotoImage(pil_img)
 
         self.canvas.delete("all")   # limpia antes de redibujar
-        # ✅ una sola create_image, anclada en nw con el offset calculado
         self.canvas.create_image(self.img_offset_x, self.img_offset_y,
                                   anchor="nw", image=self.tk_image)
 
@@ -116,7 +123,7 @@ class ROIselector:
         x1, x2 = max(0, x1), min(w, x2)
         y1, y2 = max(0, y1), min(h, y2)
         roi = self.image[y1:y2, x1:x2]
-
+        self.current_roi = roi
         self.show_roi(roi)
 
     def show_roi(self, roi):
@@ -139,6 +146,14 @@ class ROIselector:
         cy = roi_canvas_h // 2
         self.roi_canvas.create_image(cx, cy, anchor="center", image=self.tk_roi)
 
+    def save_ROI(self):
+        name = Path(self.image_path).stem
+        directory = r"C:\Users\jandr\OneDrive - Universidad del rosario\Gui_xylem\ROIs"
+        os.makedirs(directory, exist_ok=True)
+        filepath = f"{name}.tiff"
+        filepath = os.path.join(directory, filepath)
+        cv2.imwrite(filepath, self.current_roi)
+        print(f"image{name} saved")
         
 if __name__ == "__main__":
     root = tk.Tk()
