@@ -1,4 +1,5 @@
 import segmentation_models_pytorch as smp
+import torchvision.transforms.v2 as T
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -8,11 +9,9 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
 
 class XylemDataset(Dataset):
-
-    # ✅ acepta cualquier variante de extensión TIFF o PNG
+    #Detect any file format
     EXTS = {".tif", ".tiff", ".TIF", ".TIFF", ".png", ".PNG"}
 
     def __init__(self, img_dir, mask_dir, transform=None):
@@ -24,12 +23,10 @@ class XylemDataset(Dataset):
         )
         self.transform = transform
 
-        # ✅ verificación temprana — falla con mensaje claro
-        assert len(self.imgs) > 0, f"No se encontraron imágenes en {img_dir}"
-        assert len(self.imgs) == len(self.masks), (
-            f"Imágenes ({len(self.imgs)}) y máscaras ({len(self.masks)}) "
-            f"no coinciden en cantidad"
-        )
+        assert len(self.imgs) > 0, f"No images found in {img_dir}"
+        print(f"Images ({len(self.imgs)}) and masks ({len(self.masks)})")
+        assert len(self.imgs) == len(self.masks), f"Quantity between images and maks does not match"
+    
     @classmethod
     def from_lists(cls, img_paths, mask_paths, transform=None):
         obj = cls.__new__(cls)
@@ -44,11 +41,9 @@ class XylemDataset(Dataset):
     def __getitem__(self, idx):
         img = cv2.imread(str(self.imgs[idx]), cv2.IMREAD_UNCHANGED)
 
-        # ✅ manejo de imágenes de 16 bits (común en microscopía)
         if img.dtype == np.uint16:
             img = (img / 256).astype(np.uint8)
 
-        # ✅ manejo de imágenes en escala de grises (sin canal RGB)
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
         else:
@@ -59,21 +54,20 @@ class XylemDataset(Dataset):
             mask = (mask / 256).astype(np.uint8)
         mask = (mask > 127).astype(np.float32)
 
-        if self.transform:
-            out  = self.transform(image=img, mask=mask)
-            img  = out["image"]
-            mask = out["mask"].unsqueeze(0)
+        out  = self.transform(image=img, mask=mask)
+        img  = out["image"]
+        mask = out["mask"].unsqueeze(0)
         return img, mask
 
-# ── Augmentaciones ────────────────────────────────────────────────────────────
-
-train_tf = A.Compose([
+# Albumentations
+TARGET_SIZE = (1024, 1024)
+train_transformations = A.Compose([
     A.PadIfNeeded(min_height=512, min_width=512,
                   border_mode=cv2.BORDER_REFLECT),
-    A.RandomCrop(512, 512),
+    A.Resize(height=TARGET_SIZE[0], width=TARGET_SIZE[1]),  # ← A.Resize, no T.Resize
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
-    A.RandomRotate90(p=0.5),
+    A.RandomRotate90(p=0.5),tas
     A.ElasticTransform(p=0.3),
     A.CLAHE(clip_limit=3.0, p=0.5),
     A.GaussNoise(p=0.2),
@@ -81,15 +75,15 @@ train_tf = A.Compose([
     ToTensorV2(),
 ])
 
-val_tf = A.Compose([
+validate_transformations = A.Compose([
     A.PadIfNeeded(min_height=512, min_width=512,
                   border_mode=cv2.BORDER_REFLECT), 
-    A.PadIfNeeded(512, 512),   # ✅ pad en vez de crop — no pierde bordes
+    A.Resize(height=TARGET_SIZE[0], width=TARGET_SIZE[1]),  
     A.Normalize(),
     ToTensorV2(),
 ])
 
-# ── Modelo ────────────────────────────────────────────────────────────────────
+# Model
 
 def build_model():
     return smp.Unet(
@@ -100,7 +94,7 @@ def build_model():
         activation      = None,
     )
 
-# ── Pérdida ───────────────────────────────────────────────────────────────────
+# Loss 
 
 dice_loss = smp.losses.DiceLoss(mode="binary")
 bce_loss  = nn.BCEWithLogitsLoss()
@@ -108,17 +102,16 @@ bce_loss  = nn.BCEWithLogitsLoss()
 def criterion(pred, target):
     return 0.5 * dice_loss(pred, target) + 0.5 * bce_loss(pred, target)
 
-# ── Métricas ──────────────────────────────────────────────────────────────────
+# Metrics
 
 def dice_score(pred_logits, target, threshold=0.5):
     """Dice coefficient sobre un batch. Devuelve valor entre 0 y 1."""
     pred = (torch.sigmoid(pred_logits) > threshold).float()
     intersection = (pred * target).sum(dim=(1, 2, 3))
     union        = pred.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3))
-    # ✅ smooth=1 evita división por cero si pred y target son ambos vacíos
     return ((2 * intersection + 1) / (union + 1)).mean().item()
 
-# ── Entrenamiento ─────────────────────────────────────────────────────────────
+#Training
 
 def train(
     img_dir, mask_dir,
@@ -130,7 +123,7 @@ def train(
     print(f"Usando: {device.upper()}")
 
     # Dataset completo — split en train/val
-    full_ds  = XylemDataset(img_dir, mask_dir)   # sin transform aún
+    full_ds  = XylemDataset(img_dir, mask_dir)   
     print("Found sizes:")
     for p in full_ds.imgs:
         img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
@@ -157,9 +150,8 @@ def train(
     val_imgs    = [all_imgs[i]  for i in val_idx]
     val_masks   = [all_masks[i] for i in val_idx]
 
-    # ✅ cada dataset tiene su propia lista de archivos y su propio transform
-    train_ds = XylemDataset.from_lists(train_imgs, train_masks, transform=train_tf)
-    val_ds   = XylemDataset.from_lists(val_imgs,   val_masks,   transform=val_tf)
+    train_ds = XylemDataset.from_lists(train_imgs, train_masks, transform=train_transformations)
+    val_ds   = XylemDataset.from_lists(val_imgs,   val_masks,   transform=validate_transformations)
 
     print(f"Train: {len(train_ds)} | Val: {len(val_ds)}")
 
@@ -211,7 +203,7 @@ def train(
     print(f"\nListo. Modelo en: {save_path}")
     return model
 
-# ── Inferencia ────────────────────────────────────────────────────────────────
+# Inference
 
 def predict_roi(roi_bgr: np.ndarray, model_path="xylem_unet.pth") -> np.ndarray:
     """Recibe ROI en BGR (OpenCV), devuelve máscara binaria uint8 del mismo tamaño."""
@@ -237,11 +229,11 @@ def predict_roi(roi_bgr: np.ndarray, model_path="xylem_unet.pth") -> np.ndarray:
     mask = (prob > 0.5).astype(np.uint8) * 255  # ✅ 255 para visualizar en OpenCV
     return cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point 
 
 if __name__ == "__main__":
-    IMG_DIR  = r"C:\Users\jandr\OneDrive - Universidad del rosario\Gui_xylem\ROIs"
-    MASK_DIR = r"C:\Users\jandr\OneDrive - Universidad del rosario\Gui_xylem\Masks"
+    IMG_DIR  = r"C:\Users\jandr\OneDrive - Universidad del rosario\Gui_xylem\ROIs_all"
+    MASK_DIR = r"C:\Users\jandr\OneDrive - Universidad del rosario\Gui_xylem\Masks_all"
 
     train(
         img_dir   = IMG_DIR,
@@ -250,5 +242,5 @@ if __name__ == "__main__":
         batch_size= 4,
         lr        = 1e-4,
         val_split = 0.2,
-        save_path = "xylem_unet.pth"
+        save_path = "all_unet.pth"
     )
